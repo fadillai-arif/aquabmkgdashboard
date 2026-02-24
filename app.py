@@ -1,8 +1,9 @@
 import os
 import json
+import subprocess
 from pathlib import Path
-from datetime import datetime
-from flask import Flask, render_template, send_from_directory, jsonify
+from datetime import datetime, timedelta
+from flask import Flask, render_template, send_from_directory, jsonify, redirect, url_for
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -21,30 +22,39 @@ STATE_FILE = DATA_DIR / "alert_state.json"
 app = Flask(__name__, static_folder=str(STATIC_DIR), template_folder=str(BASE_DIR / "templates"))
 
 # --- Helpers ---
-def parse_jsonl(path: Path, max_lines: int = 200):
-    """Read last up to max_lines entries from JSONL."""
+def parse_jsonl(path: Path, max_lines: int = 5, days_back: int = None):
+    """Read entries from JSONL with optional date filtering."""
     if not path.exists():
         return []
-    lines = []
+    entries = []
+    cutoff = None
+    if days_back:
+        cutoff = datetime.now() - timedelta(days=days_back)
+
     with path.open("r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
-            lines.append(line)
-    # Use last max_lines
-    lines = lines[-max_lines:]
-    entries = []
-    for line in lines:
-        try:
-            entries.append(json.loads(line))
-        except Exception:
-            continue
+            try:
+                data = json.loads(line)
+                if cutoff:
+                    # Parse time_wib: "2026-02-24 14:16 WIB"
+                    time_str = data.get("time_wib", "").replace(" WIB", "")
+                    entry_time = datetime.strptime(time_str, "%Y-%m-%d %H:%M")
+                    if entry_time < cutoff:
+                        continue
+                entries.append(data)
+            except Exception:
+                continue
+    
+    if not days_back:
+        entries = entries[-max_lines:]
     return entries
 
 def read_latest_log():
-    entries = parse_jsonl(LOG_FILE, max_lines=200)
-    return entries[-1] if entries else None
+    entries = parse_jsonl(LOG_FILE, max_lines=1)
+    return entries[0] if entries else None
 
 def read_state():
     if STATE_FILE.exists():
@@ -54,6 +64,10 @@ def read_state():
         except Exception:
             return {}
     return {}
+
+def save_state(state):
+    with STATE_FILE.open("w", encoding="utf-8") as f:
+        json.dump(state, f, indent=2)
 
 def level_from_count(cnt: int):
     if cnt >= 10:
@@ -122,8 +136,8 @@ def index():
                     "chip_color": color_for_level(level)
                 })
 
-    # Recent runs (for history list)
-    recent_entries = parse_jsonl(LOG_FILE, max_lines=50)  # ringkas untuk UI
+    # Recent runs (for history list) - Max 5 as requested
+    recent_entries = parse_jsonl(LOG_FILE, max_lines=5)
 
     return render_template(
         "index.html",
@@ -133,6 +147,43 @@ def index():
         current_alerts=current_alerts,
         recent_entries=recent_entries,
         datetime=datetime
+    )
+
+@app.route("/run-check", methods=["POST"])
+def run_check():
+    try:
+        subprocess.run(["python3", str(BASE_DIR / "hourly_check.py")], check=True)
+        return redirect(url_for("index"))
+    except Exception as e:
+        return f"Error running check: {e}", 500
+
+@app.route("/reset-alerts", methods=["POST"])
+def reset_alerts():
+    save_state({})
+    # Clear the log file or remove the last entry to clear "Lokasi Terdeteksi"
+    if LOG_FILE.exists():
+        with open(LOG_FILE, "w", encoding="utf-8") as f:
+            f.write("")
+    
+    # Reset the map by deleting the latest map file
+    latest_map = MAPS_DIR / "latest.jpg"
+    if latest_map.exists():
+        latest_map.unlink()
+        
+    return redirect(url_for("index"))
+
+@app.route("/history-7d")
+def history_7d():
+    entries = parse_jsonl(LOG_FILE, days_back=7)
+    return render_template(
+        "index.html",
+        title="AQUA EWS - 7 Day History",
+        latest_map_rel=None,
+        current_time="7 Day History View",
+        current_alerts=[],
+        recent_entries=entries,
+        datetime=datetime,
+        is_history=True
     )
 
 # --- Simple APIs for automation/monitoring ---
