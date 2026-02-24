@@ -1,0 +1,396 @@
+import numpy as np
+import matplotlib
+matplotlib.use('Agg')  # Use non-GUI backend
+import matplotlib.pyplot as plt
+from PIL import Image
+import requests
+from io import BytesIO
+import pandas as pd
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.image import MIMEImage
+from datetime import datetime, timezone, timedelta
+import json
+import os
+
+# WIB timezone (UTC+7)
+WIB = timezone(timedelta(hours=7))
+
+def get_wib_time():
+    """Get current time in WIB timezone (UTC+7)"""
+    return datetime.now(WIB)
+
+# State file for tracking consecutive alerts
+STATE_FILE = "alert_state.json"
+
+def load_alert_state():
+    """Load alert state from file"""
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE, 'r') as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
+
+def save_alert_state(state):
+    """Save alert state to file"""
+    with open(STATE_FILE, 'w') as f:
+        json.dump(state, f, indent=2)
+
+# ===== EMAIL CONFIGURATION - EDIT HERE =====
+EMAIL_CONFIG = {
+    "sender_email": "aqua.bmkg.early.warning@gmail.com",
+    "password": "mkuvlbvetqaldmli",
+
+    # Default email for all locations
+    "default_receivers": [
+        "arif.fadillah@danone.com",
+    ],
+
+    # Email List
+    "location_emails": {
+        "Berastagi": ["arif.fadillah@danone.com", "martin.aritonang@danone.com", "juna.tarigan@danone.com"],
+        "Langkat": ["arif.fadillah@danone.com", "martin.aritonang@danone.com", "juna.tarigan@danone.com"],
+        "Solok": ["arif.fadillah@danone.com", "herry.susanto@danone.com", "raisal.fachlevy@danone.com", "Agung.PRASTYO@danone.com", "Yogi.PUTRA@danone.com"],
+        "Tanggamus": ["arif.fadillah@danone.com", "Radhitya.PRATAMA@danone.com", "Hendri.SAPUTRA@danone.com"],
+        "Citereup": ["arif.fadillah@danone.com", "taruli.hutapea@danone.com", "fajar.ramadhanchr@danone.com"],
+        "Sentul": ["arif.fadillah@danone.com", "dwiyana.oktakusmana@danone.com", "fajar.ramadhanchr@danone.com"],
+        "Ciherang, Caringin": ["arif.fadillah@danone.com", "ida.mintarnik@danone.com", "Asep.RIDWAN@danone.com", "Restu.PAMUJI@danone.com", "Edang.Edang@danone.com", "abdullah.kelanohon@danone.com", "ujang.sudrajat@danone.com", "iqbal.zulfikar@danone.com", "mahmudin.nurulfazri@danone.com"],
+        "Lido": ["arif.fadillah@danone.com", "ida.mintarnik@danone.com", "Edang.Edang@danone.com", "mohammad.isfan@danone.com"],
+        "Kubang": ["arif.fadillah@danone.com", "Avep.Zein@danone.com", "Anugrah.RESTU-RAHAYU@danone.com", "lina.rosmalina@danone.com"],
+        "Cianjur": ["arif.fadillah@danone.com", "agung.prayoga@danone.com", "Avief.SURAHMAN@danone.com", "warsono.usep@danone.com", "Uden.WINAJAT@danone.com", "Ricky.Ryantono@danone.com"],
+        "Subang": ["arif.fadillah@danone.com", "rahmat.hidayat@danone.com", "rochmad.fajar@danone.com"],
+        "Wonosobo": ["arif.fadillah@danone.com", "afit.nurrohman@danone.com", "rudi.pranyoto@danone.com", "Mohammad.SUNARNO@danone.com"],
+        "Klaten": ["arif.fadillah@danone.com", "Jatmiko.Hadi@danone.com","Heni.SUSANA@danone.com"],
+        "Pandaan": ["arif.fadillah@danone.com", "Faridah.Hasan@danone.com", "Refita.KAUTSAR@danone.com"],
+        "Keboncandi": ["arif.fadillah@danone.com", "Faridah.Hasan@danone.com", "Joko.Sulistyo@danone.com"],
+        "Banyuwangi": ["arif.fadillah@danone.com", "Ghani.FARDAN@danone.com", "hendramanto.hendramanto@danone.com", "hari.subagyo@danone.com"],
+        "Kuwum": ["arif.fadillah@danone.com", "putu.pradipta@danone.com", "i.astawa@danone.com"],
+        "Mambal": ["arif.fadillah@danone.com", "putu.pradipta@danone.com", "i.astawa@danone.com"],
+        "Bangli": ["arif.fadillah@danone.com", "putu.pradipta@danone.com", "i.astawa@danone.com"],
+        "Sembung Gede": ["arif.fadillah@danone.com", "putu.pradipta@danone.com", "i.astawa@danone.com"],
+        "Airmadidi": ["arif.fadillah@danone.com", "marsono.marsono@danone.com", "fadli.tambanaung@danone.com"],
+        "Jakarta Selatan": ["arif.fadillah@danone.com", "cutendahofficial@gmail.com"],
+        "Bekasi": ["arif.fadillah@danone.com"],
+        "Tangerang": ["arif.fadillah@danone.com"],
+        "Banda Aceh": ["cutendahofficial@gmail.com"]
+    },
+
+    # Additional emails for 5x and 10x threshold
+    "location_emails_5x_additional": {
+        # Group 1: West Java & Sumatra locations
+        "Berastagi": ["Juli.PURNOMO@danone.com"],
+        "Langkat": ["Juli.PURNOMO@danone.com"],
+        "Solok": ["Deden.Somantri@danone.com"],
+        "Tanggamus": ["Agus.Herdiana@danone.com", "Teguh.SANTOSO2@danone.com"],
+        "Citereup": ["Mohammad.EFENDY@danone.com"],
+        "Sentul": ["Mohammad.EFENDY@danone.com"],
+        "Ciherang, Caringin": ["Lestyo.PRIHADIANTO@danone.com"],
+        "Lido": ["Lestyo.PRIHADIANTO@danone.com"],
+        "Kubang": ["Krisvan.Sarendeng@danone.com"],
+        "Cianjur": ["Muhammad.Fahroni@danone.com"],
+        "Subang": ["Joko.Prasojo@danone.com"],
+
+        # Group 2: Central/East Java, Bali, Sulawesi locations
+        "Wonosobo": [],
+        "Klaten": ["Novan.Yulianto@danone.com"],
+        "Pandaan": ["Asep.Mawan@danone.com"],
+        "Keboncandi": ["Asep.Mawan@danone.com"],
+        "Banyuwangi": ["achmad.afandi@danone.com"],
+        "Kuwum": ["iketut.MUWARANATA@danone.com"],
+        "Mambal": ["iketut.MUWARANATA@danone.com"],
+        "Bangli": ["iketut.MUWARANATA@danone.com"],
+        "Sembung Gede": ["iketut.MUWARANATA@danone.com"],
+        "Airmadidi": ["Dwi.Nofriyadi@danone.com"],
+
+        # Jakarta area
+        "Jakarta Selatan": ["Azwar.muhammad@danone.com"],
+
+        # Bekasi & Tangerang - no additional emails for 5x
+        "Bekasi": ["Arya.PUTRA@danone.com"],
+        "Tangerang": [],
+    }
+}
+
+def classify_color(rgb):
+    r, g, b = rgb
+
+    # --- Hitam / Abu-abu ---
+    if r < 40 and g < 40 and b < 40:
+        return "Black"
+    if abs(r-g) < 15 and abs(g-b) < 15 and abs(r-b) < 15:
+        return "Gray"
+    # --- Putih ---
+    if r > 240 and g > 240 and b > 240:
+        return "White"
+    # --- Biru ---
+    if b > 200 and g > 150:
+        return "Light Blue"        # contoh (76,132,253)
+    if b > 170 and g < 160:
+        return "Blue"              # contoh (50,98,180)
+    if b > 100 and r < 50 and g < 120:
+        return "Dark Blue"         # contoh (10,72,130)
+    # --- Hijau ---
+    if g > 180 and b > 100 and r < 50:
+        return "Green"             # contoh (0,192,142)
+    if g > 180 and r > 120 and b < 100:
+        return "Yellow-Green"      # contoh (161,208,3)
+    # --- Kuning & Orange ---
+    if r > 180 and g > 140 and b < 80 and abs(r-g) < 70:
+        return "Yellow"             # contoh (198,187,1), (205,154,0)
+    if r > 200 and 120 < g < 180 and b < 80 and (r-g) > 60:
+        return "Orange"             # contoh (207,151,3)
+    if r > 240 and 140 < g < 180 and b < 80:
+        return "Light Orange"       # contoh (254,156,7)
+    # --- Peach / Pink / Red ---
+    if r > 230 and g > 180 and b > 120:
+        return "Peach"             # contoh (249,196,148)
+    if r > 240 and 60 < g < 120 and b < 120:
+        return "Pink"              # contoh (254,82,90)
+    if r > 180 and g < 80 and b < 80:
+        return "Red"               # contoh (230,3,16)
+    # fallback
+    return "Gray"
+
+def run_weather_check():
+    """Main weather monitoring function"""
+    try:
+        print(f"Starting weather analysis at {get_wib_time()}")
+
+        # Download satellite image
+        IMAGE_URL = "https://inderaja.bmkg.go.id/IMAGE/HIMA/H08_EH_Indonesia.png"
+        response = requests.get(IMAGE_URL, timeout=30)
+        response.raise_for_status()
+        img = Image.open(BytesIO(response.content)).convert("RGB")
+
+        # Georeference points
+        geo_points = np.array([[100.0, -10.0], [140.0, -10.0], [100.0, 10.0], [140.0, 10.0]])
+        pixel_points = np.array([[281, 836], [1393, 836], [280, 280], [1393, 280]])
+
+        # Affine transform
+        A = np.hstack([geo_points, np.ones((4, 1))])
+        ax = np.linalg.lstsq(A, pixel_points[:, 0], rcond=None)[0]
+        ay = np.linalg.lstsq(A, pixel_points[:, 1], rcond=None)[0]
+
+        def geo2pix(lon, lat):
+            x = ax[0] * lon + ax[1] * lat + ax[2]
+            y = ay[0] * lon + ay[1] * lat + ay[2]
+            return x, y
+
+        # Weather monitoring stations
+        stations = [
+            {"Location": "Berastagi", "lon": 98.52612, "lat": 3.238704},
+            {"Location": "Langkat", "lon": 98.474478, "lat": 3.515078},
+            {"Location": "Solok", "lon": 100.634659, "lat": -0.970453},
+            {"Location": "Tanggamus", "lon": 104.668215, "lat": -5.445672},
+            {"Location": "Citereup", "lon": 106.927813, "lat": -6.434070},
+            {"Location": "Sentul", "lon": 106.854409, "lat": -6.519395},
+            {"Location": "Ciherang, Caringin", "lon": 106.828322, "lat": -6.709006},
+            {"Location": "Lido", "lon": 106.814734, "lat": -6.738756},
+            {"Location": "Kubang", "lon": 106.758913, "lat": -6.768264},
+            {"Location": "Cianjur", "lon": 107.039412, "lat": -6.866725},
+            {"Location": "Subang", "lon": 107.743987, "lat": -6.711718},
+            {"Location": "Wonosobo", "lon": 109.900233, "lat": -7.347633},
+            {"Location": "Klaten", "lon": 110.547275, "lat": -7.565004},
+            {"Location": "Pandaan", "lon": 112.638266, "lat": -7.721405},
+            {"Location": "Keboncandi", "lon": 112.915107, "lat": -7.832043},
+            {"Location": "Banyuwangi", "lon": 114.260487, "lat": -8.313412},
+            {"Location": "Kuwum", "lon": 115.195917, "lat": -8.402470},
+            {"Location": "Mambal", "lon": 115.226974, "lat": -8.478396},
+            {"Location": "Bangli", "lon": 115.358548, "lat": -8.390565},
+            {"Location": "Sembung Gede", "lon": 115.091835, "lat": -8.489613},
+            {"Location": "Airmadidi", "lon": 124.99932, "lat": 1.438416},
+            {"Location": "Jakarta Selatan", "lon": 106.821777, "lat": -6.222864},
+            {"Location": "Bekasi", "lon": 107.000, "lat": -6.234},
+            {"Location": "Tangerang", "lon": 106.600331, "lat": -6.223320},
+            {"Location": "Banda Aceh", "lon": 95.327724, "lat": 5.556314},
+        ]
+
+        # Convert to pixels and extract colors
+        pixel_coords = [geo2pix(st["lon"], st["lat"]) for st in stations]
+        results = []
+
+        for idx, (st, (x, y)) in enumerate(zip(stations, pixel_coords), 1):
+            px = int(round(x))
+            py = int(round(y))
+            px = np.clip(px, 0, img.width - 1)
+            py = np.clip(py, 0, img.height - 1)
+            rgb = img.getpixel((px, py))
+
+            if not isinstance(rgb, (tuple, list)) or len(rgb) < 3:
+                rgb = (128, 128, 128)
+
+            color_name = classify_color(rgb)
+            results.append({
+                "No": idx,
+                "Location": st["Location"],
+                "Longitude": st["lon"],
+                "Latitude": st["lat"],
+                "Pixel_X": px,
+                "Pixel_Y": py,
+                "R": rgb[0],
+                "G": rgb[1],
+                "B": rgb[2],
+                "Dominant_Color": color_name
+            })
+
+
+        # Create DataFrame
+        df = pd.DataFrame(results)
+
+        # Add weather warning column
+        # Tambahkan kolom alert berdasarkan warna
+        df["Weather Warning"] = df["Dominant_Color"].apply(
+            lambda color: "Hujan Lebat - Sangat Lebat" if color in ["Orange", "Light Orange", "Peach", "White", "Pink", "Red"] else ""
+        )
+
+        print(f"Analysis complete. Found {len(df)} stations.")
+
+        # Load previous alert state
+        alert_state = load_alert_state()
+
+        # Filter stations with warnings
+        alert_df = df[df["Weather Warning"] != ""]
+
+        # Update alert counts for each location
+        current_locations_with_alert = set(alert_df["Location"].tolist()) if not alert_df.empty else set()
+
+        # Update state
+        for location in df["Location"].unique():
+            if location in current_locations_with_alert:
+                # Increment counter for locations with alert
+                alert_state[location] = alert_state.get(location, 0) + 1
+                print(f"{location}: Alert detected ({alert_state[location]}x consecutive)")
+            else:
+                # Reset counter for locations without alert
+                if location in alert_state and alert_state[location] > 0:
+                    print(f"{location}: Alert cleared (was {alert_state[location]}x)")
+                alert_state[location] = 0
+
+        # Save updated state
+        save_alert_state(alert_state)
+
+        # Filter locations that have reached 1x or 5x threshold (skip 3x, 4x to avoid spam)
+        locations_to_email = [loc for loc in current_locations_with_alert
+                              if alert_state.get(loc, 0) in [1, 5, 10]]
+
+        if locations_to_email:
+            counts = [alert_state.get(loc, 0) for loc in locations_to_email]
+            print(f"\n🚨 EMAIL ALERT: {len(locations_to_email)} location(s) at {counts}x threshold!")
+
+            # Filter DataFrame for locations that need email
+            email_alert_df = alert_df[alert_df["Location"].isin(locations_to_email)]
+
+            # Email configuration
+            sender_email = EMAIL_CONFIG["sender_email"]
+            password = EMAIL_CONFIG["password"]
+
+            # ===== CREATE MAP IMAGE ONCE (untuk semua email) =====
+            plt.figure(figsize=(12, 10))
+            plt.imshow(img)
+
+            placed_labels = []
+            min_dx, min_dy = 50, 20
+
+            for _, row in email_alert_df.iterrows():
+                x, y = row["Pixel_X"], row["Pixel_Y"]
+                color = np.array([row["R"], row["G"], row["B"]]) / 255
+
+                plt.scatter(x, y, color=color, s=300, edgecolors='black', linewidth=2, zorder=5)
+
+                label_x, label_y = x + 15, y - 15
+                for px, py in placed_labels:
+                    if abs(label_x - px) < min_dx and abs(label_y - py) < min_dy:
+                        label_y -= min_dy
+
+                count = alert_state.get(row["Location"], 0)
+                label_text = f"{row['Location']} ({count}x)"
+                plt.text(label_x, label_y, label_text, fontsize=10,
+                         bbox=dict(boxstyle="round,pad=0.3", facecolor='yellow', alpha=0.7),
+                         ha='left', va='bottom', zorder=10)
+                placed_labels.append((label_x, label_y))
+
+            plt.axis('off')
+
+            buf = BytesIO()
+            plt.savefig(buf, format='jpg', dpi=150, bbox_inches='tight')
+            buf.seek(0)
+            plt.close()
+
+            img_attachment = MIMEImage(buf.read(), name="Peta Potensi Hujan Lebat.jpg")
+
+            # Kirim email PER LOKASI (biar level BAHAYA/WASPADA ga kecampur)
+            now = get_wib_time()
+            tanggal_waktu = now.strftime("%d-%m-%Y, %H:%M WIB")
+
+            for _, row in email_alert_df.iterrows():
+                loc = row["Location"]
+                count = alert_state.get(loc, 0)
+
+                if count == 10:
+                    level = "BAHAYA"
+                    subject_prefix = "🔴 [BAHAYA] "
+                    time_indicator = f"({count} jam → BAHAYA)"
+                elif count == 5:
+                    level = "SIAGA"
+                    subject_prefix = "🟠 [SIAGA] "
+                    time_indicator = f"({count} jam → SIAGA)"
+                else:
+                    level = "WASPADA"
+                    subject_prefix = "🟡 [WASPADA] "
+                    time_indicator = f"({count} jam → WASPADA)"
+
+                # Receiver khusus lokasi
+                receiver_emails = set()
+                if loc in EMAIL_CONFIG["location_emails"]:
+                    receiver_emails.update(EMAIL_CONFIG["location_emails"][loc])
+                else:
+                    receiver_emails.update(EMAIL_CONFIG["default_receivers"])
+
+                if count >= 5 and loc in EMAIL_CONFIG["location_emails_5x_additional"]:
+                    receiver_emails.update(EMAIL_CONFIG["location_emails_5x_additional"][loc])
+
+                receiver_emails = list(receiver_emails)
+
+                if not all([sender_email, receiver_emails, password]):
+                    print(f"⚠️ Email config incomplete untuk {loc}, skip kirim email.")
+                    continue
+
+                msg = MIMEMultipart()
+                msg["From"] = sender_email
+                msg["To"] = ", ".join(receiver_emails)
+                msg["Subject"] = f"{subject_prefix}Hujan Lebat - {loc}, {tanggal_waktu}"
+
+                body = f"""
+                <p><strong>{tanggal_waktu}</strong></p>
+                <p>Potensi Hujan Lebat - Sangat Lebat di:</p>
+                <p>• <strong>{loc}</strong> {time_indicator}</p>
+                """
+                msg.attach(MIMEText(body, "html"))
+
+                # Attach image (boleh tetap map global)
+                img_attachment = MIMEImage(buf.getvalue(), name="BMKG_Early_Warning_Map.jpg")
+                msg.attach(img_attachment)
+
+                with smtplib.SMTP("smtp.gmail.com", 587) as server:
+                    server.starttls()
+                    server.login(sender_email, password)
+                    server.send_message(msg)
+
+                print(f"✅ Email terkirim untuk {loc} ({level})")
+
+        elif not alert_df.empty:
+            print(f"\n⏳ Alerts detected but not at 1x, 5x, 10x  threshold. Waiting for next trigger...")
+        else:
+            print("✅ No weather alerts detected.")
+
+        print(f"Weather check completed at {get_wib_time()}")
+
+    except Exception as e:
+        print(f"Error in weather analysis: {str(e)}")
+        raise
+
+if __name__ == "__main__":
+    run_weather_check()
